@@ -35,14 +35,12 @@ public class ProjectServiceImpl implements ProjectService {
     private final ProjectRepository projectRepository;
 
     private final CloudinaryService cloudinaryService;
-
-    @Qualifier("imageUploadExecutor")
     private final AsyncTaskExecutor imageUploadExecutor;
 
     @Value("${uploads.parallel-timeout-seconds:120}")
     private long parallelTimeoutSeconds;
 
-    public ProjectServiceImpl(ProjectRepository projectRepository, CloudinaryService cloudinaryService, AsyncTaskExecutor imageUploadExecutor) {
+    public ProjectServiceImpl(ProjectRepository projectRepository, CloudinaryService cloudinaryService, @Qualifier("imageUploadExecutor") AsyncTaskExecutor imageUploadExecutor) {
         this.projectRepository = projectRepository;
         this.cloudinaryService = cloudinaryService;
         this.imageUploadExecutor = imageUploadExecutor;
