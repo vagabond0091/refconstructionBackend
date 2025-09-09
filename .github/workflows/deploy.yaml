@@ -17,15 +17,15 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
-      - name: Set up JDK (if Java)
+      - name: Set up JDK
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
-      - name: Build (no deploy)
+      - name: Build (unit tests optional)
         run: |
-          echo "Run your unit tests here"
-          # ./mvnw -B -DskipTests=false test
+          echo "Run unit tests here if needed"
+          # ./mvnw -B test
 
   deploy:
     name: Push to ECR & Deploy to EB
@@ -47,37 +47,46 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS (OIDC)
+      # 🔹 1. Configure AWS using OIDC role
+      - name: Configure AWS credentials from OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: arn:aws:iam::140023375941:role/github-oidc-eb-deploy
 
+      # Debug
+      - name: Debug AWS Identity
+        run: aws sts get-caller-identity
+
+      #  2. Login to ECR
       - name: Login to Amazon ECR
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      #  3. Build Docker image (tagged with commit SHA)
       - name: Build Docker image
         run: |
           IMAGE="${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}"
           GIT_SHA="${{ github.sha }}"
-          docker build -t ${IMAGE}:$GIT_SHA -t ${IMAGE}:latest .
+          docker build -t ${IMAGE}:${GIT_SHA} .
 
+      #  4. Push Docker image
       - name: Push Docker image
         run: |
           IMAGE="${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}"
-          docker push ${IMAGE}:latest
           docker push ${IMAGE}:${{ github.sha }}
 
-      - name: Generate Dockerrun.aws.json (v2)
+      #  5. Generate Dockerrun.aws.json with commit SHA tag
+      - name: Generate Dockerrun.aws.json
         run: |
+          IMAGE_URI="140023375941.dkr.ecr.ap-southeast-1.amazonaws.com/refconstructionopc:${{ github.sha }}"
           cat > Dockerrun.aws.json <<JSON
           {
             "AWSEBDockerrunVersion": 2,
             "containerDefinitions": [
               {
                 "name": "app",
-                "image": "140023375941.dkr.ecr.ap-southeast-1.amazonaws.com/refconstructionopc:latest",
+                "image": "${IMAGE_URI}",
                 "essential": true,
                 "memory": 512,
                 "portMappings": [{ "hostPort": 80, "containerPort": ${{ env.CONTAINER_PORT }} }]
@@ -87,10 +96,14 @@ jobs:
           JSON
           zip SourceBundle.zip Dockerrun.aws.json
 
+      # 6. Deploy to EB (explicitly passing AWS creds)
       - name: Deploy to Elastic Beanstalk
         uses: einaregilsson/beanstalk-deploy@v22
         with:
-          region: ${{ env.AWS_REGION }}                 # <-- FIXED key
+          aws_access_key: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws_secret_key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws_session_token: ${{ env.AWS_SESSION_TOKEN }}
+          region: ${{ env.AWS_REGION }}
           application_name: ${{ env.EB_APP_NAME }}
           environment_name: ${{ env.EB_ENV_NAME }}
           version_label: v-${{ github.run_number }}-${{ github.sha }}
