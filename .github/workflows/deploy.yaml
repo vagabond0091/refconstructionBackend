@@ -43,6 +43,7 @@ jobs:
       EB_APP_NAME: refconstructionopc
       EB_ENV_NAME: Refconstructionopc-env
       CONTAINER_PORT: 8080
+      VERSION_LABEL: v-${{ github.run_number }}-${{ github.run_attempt }}-${{ github.sha }}
 
     steps:
       - uses: actions/checkout@v4
@@ -106,7 +107,7 @@ jobs:
           region: ${{ env.AWS_REGION }}
           application_name: ${{ env.EB_APP_NAME }}
           environment_name: ${{ env.EB_ENV_NAME }}
-          version_label: v-${{ github.run_number }}-${{ github.sha }}
+          version_label: ${{ env.VERSION_LABEL }}
           deployment_package: SourceBundle.zip
           existing_bucket_name: elasticbeanstalk-ap-southeast-1-140023375941
           wait_for_deployment: true
