@@ -28,7 +28,6 @@ import org.springframework.data.domain.Pageable;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class ProjectServiceImpl implements ProjectService {
     private static final Logger log = LoggerFactory.getLogger(ProjectServiceImpl.class);
 

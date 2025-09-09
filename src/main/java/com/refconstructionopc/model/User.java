@@ -2,7 +2,6 @@ package com.refconstructionopc.model;
 
 import com.refconstructionopc.enums.Role;
 import jakarta.persistence.*;
-import lombok.*;
 
 @Entity
 @Table(name = "users")

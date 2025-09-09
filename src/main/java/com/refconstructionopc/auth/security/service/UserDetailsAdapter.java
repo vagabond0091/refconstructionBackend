@@ -2,7 +2,6 @@ package com.refconstructionopc.auth.security.service;
 
 import com.refconstructionopc.model.User;
 import com.refconstructionopc.repository.UserRepository;
-import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.core.*;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
