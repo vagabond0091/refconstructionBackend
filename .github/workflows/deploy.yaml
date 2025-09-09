@@ -110,4 +110,4 @@ jobs:
           version_label: ${{ env.VERSION_LABEL }}
           deployment_package: SourceBundle.zip
           existing_bucket_name: elasticbeanstalk-ap-southeast-1-140023375941
-          wait_for_deployment: true
+          wait_for_deployment: false
