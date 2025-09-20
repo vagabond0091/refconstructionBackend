@@ -77,25 +77,12 @@ jobs:
           IMAGE="${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}"
           docker push ${IMAGE}:${{ github.sha }}
 
-      #  5. Generate Dockerrun.aws.json with commit SHA tag
-      - name: Generate Dockerrun.aws.json
+      #  5. Verify image if it was pushed
+      - name: Verify image pushed
         run: |
-          IMAGE_URI="140023375941.dkr.ecr.ap-southeast-1.amazonaws.com/refconstructionopc:${{ github.sha }}"
-          cat > Dockerrun.aws.json <<JSON
-          {
-            "AWSEBDockerrunVersion": 2,
-            "containerDefinitions": [
-              {
-                "name": "app",
-                "image": "${IMAGE_URI}",
-                "essential": true,
-                "memory": 512,
-                "portMappings": [{ "hostPort": 80, "containerPort": ${{ env.CONTAINER_PORT }} }]
-              }
-            ]
-          }
-          JSON
-          zip SourceBundle.zip Dockerrun.aws.json
+          aws ecr describe-images \
+            --repository-name "${{ env.ECR_REPO }}" \
+            --image-ids imageTag="${{ github.sha }}"
 
       # 6. Deploy to EB (explicitly passing AWS creds)
       - name: Deploy to Elastic Beanstalk
@@ -110,4 +97,4 @@ jobs:
           version_label: ${{ env.VERSION_LABEL }}
           deployment_package: SourceBundle.zip
           existing_bucket_name: elasticbeanstalk-ap-southeast-1-140023375941
-          wait_for_deployment: false
+          wait_for_deployment: true
