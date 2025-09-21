@@ -111,6 +111,13 @@ jobs:
           zip -q SourceBundle.zip Dockerrun.aws.json
           ls -lah
           test -f SourceBundle.zip || { echo "SourceBundle.zip not found"; exit 1; }
+          
+      - name: Sanity check S3 access (bucket & object)
+        run: |
+          aws s3api get-bucket-location --bucket elasticbeanstalk-ap-southeast-1-140023375941
+          aws s3api head-object \
+            --bucket elasticbeanstalk-ap-southeast-1-140023375941 \
+            --key refconstructionopc/v-13-9-21b2f3b4134347c43c0f0a7be6698f9f888abcac.zip
 
       # 6. Deploy to EB (explicitly passing AWS creds)
       - name: Deploy to Elastic Beanstalk
