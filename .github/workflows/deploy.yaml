@@ -84,6 +84,34 @@ jobs:
             --repository-name "${{ env.ECR_REPO }}" \
             --image-ids imageTag="${{ github.sha }}"
 
+      # >>> ADDED: Generate Dockerrun.aws.json (single-container v1) <<<
+      - name: Generate Dockerrun.aws.json (v1)
+        run: |
+          IMAGE_URI="${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ github.sha }}"
+          cat > Dockerrun.aws.json <<'JSON'
+          {
+            "AWSEBDockerrunVersion": 1,
+            "Image": {
+              "Name": "__IMAGE_URI__",
+              "Update": "true"
+            },
+            "Ports": [
+              { "ContainerPort": "__PORT__" }
+            ]
+          }
+          JSON
+          sed -i "s|__IMAGE_URI__|${IMAGE_URI}|g" Dockerrun.aws.json
+          sed -i "s|__PORT__|${{ env.CONTAINER_PORT }}|g" Dockerrun.aws.json
+          echo "Generated Dockerrun.aws.json:"
+          cat Dockerrun.aws.json
+
+      # >>> ADDED: Create the EB source bundle used by the deploy step <<<
+      - name: Create EB bundle (SourceBundle.zip)
+        run: |
+          zip -q SourceBundle.zip Dockerrun.aws.json
+          ls -lah
+          test -f SourceBundle.zip || { echo "SourceBundle.zip not found"; exit 1; }
+
       # 6. Deploy to EB (explicitly passing AWS creds)
       - name: Deploy to Elastic Beanstalk
         uses: einaregilsson/beanstalk-deploy@v22
