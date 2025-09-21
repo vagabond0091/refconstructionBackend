@@ -16,14 +16,11 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
-
-      # Optional pre-build (safe even if Dockerfile rebuilds it)
-      - name: Build JAR
+      - name: Build JAR (optional)
         run: mvn -B -DskipTests package
 
   deploy:
@@ -35,8 +32,8 @@ jobs:
       id-token: write
     env:
       AWS_REGION: ap-southeast-1
-      EB_APP_NAME: refconstructionopc              # ✅ Your EB Application name
-      EB_ENV_NAME: refconstructionopc-docker       # ✅ Replace with *exact* new EB Environment name
+      EB_APP_NAME: refconstructionopc
+      EB_ENV_NAME: refconstructionopc-docker
       EB_BUCKET: elasticbeanstalk-ap-southeast-1-140023375941
       VERSION_LABEL: v-${{ github.run_number }}-${{ github.run_attempt }}-${{ github.sha }}
       S3_KEY: refconstructionopc/${{ github.sha }}.zip
@@ -54,27 +51,21 @@ jobs:
 
       - name: Validate Dockerfile
         run: |
-          test -f Dockerfile || { echo "❌ Dockerfile missing at repo root"; exit 1; }
+          test -f Dockerfile || { echo " Dockerfile missing at repo root"; exit 1; }
           head -n 30 Dockerfile || true
 
       - name: Create EB SourceBundle (Dockerfile mode, NO Dockerrun)
         run: |
           set -e
           if find . -type f -iname 'dockerrun*.json' | grep -qi .; then
-            echo "❌ Dockerrun found in repo. Remove it for Dockerfile mode."
+            echo " Dockerrun found in repo. Remove it for Dockerfile mode."
             exit 1
           fi
-
           rm -f SourceBundle*.zip
           zip -qr SourceBundle.zip . -x ".git/*" ".github/*" "SourceBundle*.zip"
-
-          echo "Bundle listing (first 200 lines):"
-          unzip -l SourceBundle.zip | head -n 200 || true
-
-          # Ensure Dockerfile exists in bundle root
           unzip -l SourceBundle.zip | awk '{print $4}' | grep -qx 'Dockerfile' \
-            || { echo "❌ Dockerfile not in bundle root"; exit 1; }
-          echo "✅ Bundle looks good."
+            || { echo " Dockerfile not in bundle root"; exit 1; }
+          echo " Bundle looks good."
 
       - name: Upload bundle to EB S3
         run: |
@@ -88,18 +79,31 @@ jobs:
             --version-label "${VERSION_LABEL}" \
             --source-bundle S3Bucket="${EB_BUCKET}",S3Key="${S3_KEY}"
 
-      - name: Update environment to new version
+      # 🔎 Only proceed if env is Ready (skip update if it's already in a stuck Updating state)
+      - id: check_env
+        name: Check EB environment status
+        run: |
+          STATUS=$(aws elasticbeanstalk describe-environments \
+            --environment-names "${EB_ENV_NAME}" \
+            --query "Environments[0].Status" --output text)
+          HEALTH=$(aws elasticbeanstalk describe-environments \
+            --environment-names "${EB_ENV_NAME}" \
+            --query "Environments[0].Health" --output text)
+          echo "status=${STATUS}" >> "$GITHUB_OUTPUT"
+          echo "health=${HEALTH}" >> "$GITHUB_OUTPUT"
+          if [ "$STATUS" = "Ready" ]; then echo "ready=true" >> "$GITHUB_OUTPUT"; else echo "ready=false" >> "$GITHUB_OUTPUT"; fi
+          echo "EB Status: $STATUS | Health: $HEALTH"
+
+      - name: Update environment to new version (skips if not Ready)
+        if: steps.check_env.outputs.ready == 'true'
         run: |
           aws elasticbeanstalk update-environment \
             --environment-name "${EB_ENV_NAME}" \
             --version-label "${VERSION_LABEL}"
 
-      - name: Wait for environment update
-        run: |
-          aws elasticbeanstalk wait environment-updated \
-            --environment-names "${EB_ENV_NAME}"
 
       - name: Show recent EB environment events
+        if: always()
         run: |
           aws elasticbeanstalk describe-events \
             --application-name "${EB_APP_NAME}" \
