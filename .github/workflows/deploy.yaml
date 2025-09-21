@@ -1,4 +1,4 @@
-name: CI → EB (Dockerfile mode, no ECR)
+name: CI → EB (Dockerfile, no ECR)
 
 on:
   push:
@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '21' }
-      # Optional: if your Dockerfile COPYs target/*.jar, this speeds up the EB build
+      # Optional pre-build (safe if your Dockerfile builds the JAR anyway)
       - name: Build JAR (optional)
         run: mvn -B -DskipTests package
 
@@ -41,27 +41,46 @@ jobs:
       - name: Who am I
         run: aws sts get-caller-identity
 
-      - name: Validate Dockerfile exists at repo root
+      - name: Validate Dockerfile
         run: |
-          test -f Dockerfile || { echo "Dockerfile missing at repo root"; exit 1; }
+          if [ ! -f Dockerfile ]; then
+            echo "Dockerfile missing at repo root. EB Dockerfile mode requires it."
+            exit 1
+          fi
           head -n 50 Dockerfile || true
 
       - name: Create EB SourceBundle (Dockerfile mode, NO Dockerrun)
         run: |
           set -e
-          # Remove any old bundles and any Dockerrun files so EB never switches modes
+          # Ensure no Dockerrun survives anywhere in the repo
+          FOUND=$(find . -type f -iname 'dockerrun*.json' -print)
+          if [ -n "$FOUND" ]; then
+            echo "❌ Found Dockerrun files in repo:"
+            echo "$FOUND"
+            exit 1
+          fi
+
           rm -f SourceBundle*.zip
-          find . -maxdepth 3 -type f -iname 'dockerrun*.json' -print -delete || true
+          # (Optional) show local build outputs if present
+          [ -d target ] && ls -lah target || true
 
-          # If your Dockerfile copies target/*.jar, keep the build output (from the build job)
-          if [ -d target ]; then ls -lah target || true; fi
-
-          # Zip repo for EB, excluding git metadata/workflows and the bundle itself
+          # Zip the repo (exclude git metadata & the bundle itself)
           zip -qr SourceBundle.zip . \
             -x ".git/*" ".github/*" "SourceBundle*.zip"
 
-          echo "Bundle contents (grep important bits):"
-          unzip -l SourceBundle.zip | grep -Ei '(^|/)(dockerfile|pom\.xml|target/|src/|dockerrun)' || true
+          echo "Bundle listing (first 200 lines):"
+          unzip -l SourceBundle.zip | head -n 200 || true
+
+          # Double-check the bundle contains Dockerfile and does NOT contain Dockerrun
+          if ! unzip -l SourceBundle.zip | awk '{print $4}' | grep -qi '^Dockerfile$'; then
+            echo "❌ Dockerfile not found in SourceBundle.zip root."
+            exit 1
+          fi
+          if unzip -l SourceBundle.zip | awk '{print $4}' | grep -qi 'dockerrun'; then
+            echo "❌ Dockerrun found in SourceBundle.zip. Aborting."
+            exit 1
+          fi
+          echo "✅ Bundle looks good (Dockerfile present, no Dockerrun)."
 
       - name: Deploy to Elastic Beanstalk
         uses: einaregilsson/beanstalk-deploy@v22
@@ -76,3 +95,13 @@ jobs:
           deployment_package: SourceBundle.zip
           existing_bucket_name: elasticbeanstalk-ap-southeast-1-140023375941
           wait_for_deployment: true
+
+      - name: Show recent EB environment events
+        run: |
+          aws elasticbeanstalk describe-events \
+            --application-name "$EB_APP_NAME" \
+            --environment-name "$EB_ENV_NAME" \
+            --max-records 50 \
+            --region "$AWS_REGION" \
+          | jq -r '.Events[] | "\(.EventDate) [\(.Severity)] \(.Message)"' \
+          | sort
