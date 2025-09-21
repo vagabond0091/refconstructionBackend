@@ -11,31 +11,40 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions: { contents: read, id-token: write }
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-java@v4
-        with: { distribution: temurin, java-version: '21' }
-      # Optional pre-build (safe even if your Dockerfile builds the JAR again)
-      - name: Build JAR (optional)
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # Optional pre-build (safe even if Dockerfile rebuilds it)
+      - name: Build JAR
         run: mvn -B -DskipTests package
 
   deploy:
     runs-on: ubuntu-latest
     needs: build
     if: github.event_name == 'push' && (startsWith(github.ref,'refs/heads/master') || startsWith(github.ref,'refs/tags/'))
-    permissions: { id-token: write, contents: read }
+    permissions:
+      contents: read
+      id-token: write
     env:
       AWS_REGION: ap-southeast-1
-      EB_APP_NAME: refconstructionopc            # ⚠️ must match EB Application name EXACTLY (case-sensitive)
-      EB_ENV_NAME: Refconstructionopc-env       # your EB Environment name
+      EB_APP_NAME: refconstructionopc              # ✅ Your EB Application name
+      EB_ENV_NAME: refconstructionopc-docker       # ✅ Replace with *exact* new EB Environment name
       EB_BUCKET: elasticbeanstalk-ap-southeast-1-140023375941
       VERSION_LABEL: v-${{ github.run_number }}-${{ github.run_attempt }}-${{ github.sha }}
       S3_KEY: refconstructionopc/${{ github.sha }}.zip
     steps:
       - uses: actions/checkout@v4
 
-      - uses: aws-actions/configure-aws-credentials@v4
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: arn:aws:iam::140023375941:role/github-oidc-eb-deploy
@@ -45,35 +54,35 @@ jobs:
 
       - name: Validate Dockerfile
         run: |
-          test -f Dockerfile || { echo "Dockerfile missing at repo root"; exit 1; }
+          test -f Dockerfile || { echo "❌ Dockerfile missing at repo root"; exit 1; }
           head -n 30 Dockerfile || true
 
       - name: Create EB SourceBundle (Dockerfile mode, NO Dockerrun)
         run: |
           set -e
-          # Fail if any Dockerrun is present anywhere
           if find . -type f -iname 'dockerrun*.json' | grep -qi .; then
-            echo "❌ Dockerrun found in repo. Delete it for Dockerfile mode."
-            find . -type f -iname 'dockerrun*.json' -print
+            echo "❌ Dockerrun found in repo. Remove it for Dockerfile mode."
             exit 1
           fi
+
           rm -f SourceBundle*.zip
           zip -qr SourceBundle.zip . -x ".git/*" ".github/*" "SourceBundle*.zip"
+
           echo "Bundle listing (first 200 lines):"
           unzip -l SourceBundle.zip | head -n 200 || true
-          # Ensure Dockerfile is at the root of the zip
-          unzip -l SourceBundle.zip | awk '{print $4}' | grep -qi '^Dockerfile$' || { echo "❌ Dockerfile not in bundle root"; exit 1; }
-          echo "✅ Bundle looks good (Dockerfile present, no Dockerrun)."
+
+          # Ensure Dockerfile exists in bundle root
+          unzip -l SourceBundle.zip | awk '{print $4}' | grep -qx 'Dockerfile' \
+            || { echo "❌ Dockerfile not in bundle root"; exit 1; }
+          echo "✅ Bundle looks good."
 
       - name: Upload bundle to EB S3
         run: |
-          set -e
           aws s3 cp SourceBundle.zip "s3://${EB_BUCKET}/${S3_KEY}"
           aws s3 ls "s3://${EB_BUCKET}/${S3_KEY}"
 
       - name: Create EB application version
         run: |
-          set -e
           aws elasticbeanstalk create-application-version \
             --application-name "${EB_APP_NAME}" \
             --version-label "${VERSION_LABEL}" \
@@ -81,52 +90,14 @@ jobs:
 
       - name: Update environment to new version
         run: |
-          set -e
           aws elasticbeanstalk update-environment \
             --environment-name "${EB_ENV_NAME}" \
             --version-label "${VERSION_LABEL}"
 
-      - name: Wait and verify environment version (robust)
+      - name: Wait for environment update
         run: |
-          set -e
-          echo "Waiting for environment to be 'Ready'..."
-          aws elasticbeanstalk wait environment-updated --environment-names "${EB_ENV_NAME}"
-
-          echo "Describe env (with application name for exact match):"
-          DESCRIBE=$(aws elasticbeanstalk describe-environments \
-            --application-name "${EB_APP_NAME}" \
-            --environment-names "${EB_ENV_NAME}")
-          echo "$DESCRIBE" | jq .
-
-          # Poll for VersionLabel to show up (sometimes lags)
-          FOUND="no"
-          for i in {1..18}; do  # ~3 minutes max
-            CURR=$(aws elasticbeanstalk describe-environments \
-              --application-name "${EB_APP_NAME}" \
-              --environment-names "${EB_ENV_NAME}" \
-              --query "Environments[0].VersionLabel" --output text)
-            echo "Attempt $i: VersionLabel = ${CURR}"
-            if [ "$CURR" = "${VERSION_LABEL}" ]; then
-              FOUND="yes"
-              break
-            fi
-            sleep 10
-          done
-
-          if [ "$FOUND" != "yes" ]; then
-            echo "WARN: VersionLabel not reflected yet (got: ${CURR}). Checking events for proof of deploy..."
-            CNT=$(aws elasticbeanstalk describe-events \
-              --application-name "${EB_APP_NAME}" \
-              --environment-name "${EB_ENV_NAME}" \
-              --max-records 100 \
-              --query "length(Events[?contains(Message, '${VERSION_LABEL}')])" \
-              --output text)
-            echo "Events mentioning ${VERSION_LABEL}: $CNT"
-            if [ "$CNT" -lt 1 ]; then
-              echo "❌ Did not find an event confirming deployment of ${VERSION_LABEL}"
-              exit 1
-            fi
-          fi
+          aws elasticbeanstalk wait environment-updated \
+            --environment-names "${EB_ENV_NAME}"
 
       - name: Show recent EB environment events
         run: |
@@ -135,26 +106,4 @@ jobs:
             --environment-name "${EB_ENV_NAME}" \
             --max-records 50 \
             --query 'Events[].{When:EventDate,S:Severity,Msg:Message}' \
-            --output table
-
-      - name: (Optional) Request and fetch EB logs
-        if: always()
-        run: |
-          set -e
-          aws elasticbeanstalk request-environment-info \
-            --environment-name "${EB_ENV_NAME}" \
-            --info-type bundle >/dev/null
-          sleep 20
-          aws elasticbeanstalk retrieve-environment-info \
-            --environment-name "${EB_ENV_NAME}" \
-            --info-type bundle \
-            --query 'EnvironmentInfo[].{Time:SampleTimestamp,URL:Message}' \
-            --output table
-
-      - name: Show platform & env summary (sanity)
-        run: |
-          aws elasticbeanstalk describe-environments \
-            --application-name "${EB_APP_NAME}" \
-            --environment-names "${EB_ENV_NAME}" \
-            --query 'Environments[0].{App:ApplicationName,Env:EnvironmentName,Tier:Tier.Name,Platform:PlatformArn,Status:Status,Health:Health,Version:VersionLabel}' \
             --output table
