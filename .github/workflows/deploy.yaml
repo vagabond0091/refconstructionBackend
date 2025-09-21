@@ -28,7 +28,7 @@ jobs:
       ECR_REPO: refconstructionopc
       EB_APP_NAME: refconstructionopc
       EB_ENV_NAME: Refconstructionopc-env
-      CONTAINER_PORT: 8080
+      CONTAINER_PORT: "8080"
       VERSION_LABEL: v-${{ github.run_number }}-${{ github.run_attempt }}-${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
@@ -37,12 +37,6 @@ jobs:
         with:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: arn:aws:iam::140023375941:role/github-oidc-eb-deploy
-
-      - name: Export temp AWS creds for actions that require explicit keys
-        run: |
-          echo "AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID" >> $GITHUB_ENV
-          echo "AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY" >> $GITHUB_ENV
-          echo "AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN" >> $GITHUB_ENV
 
       - name: Who am I
         run: aws sts get-caller-identity
@@ -70,13 +64,14 @@ jobs:
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Generate Dockerrun.aws.json (v1) with numeric port
+      - name: Generate Dockerrun.aws.json (v1) and validate
         run: |
           IMAGE_URI="${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ github.sha }}"
-          jq -n --arg img "$IMAGE_URI" --arg port "${CONTAINER_PORT}" \
+          jq -n --arg img "$IMAGE_URI" --arg port "${{ env.CONTAINER_PORT }}" \
             '{AWSEBDockerrunVersion:1, Image:{Name:$img, Update:"true"}, Ports:[{ContainerPort:($port|tonumber)}]}' \
             > Dockerrun.aws.json
-          jq -e '.Ports[0].ContainerPort | numbers' Dockerrun.aws.json >/dev/null
+          jq -e '.Ports[0].ContainerPort|type=="number"' Dockerrun.aws.json >/dev/null
+          cat Dockerrun.aws.json
 
       - name: Create EB bundle
         run: zip -q SourceBundle.zip Dockerrun.aws.json
@@ -84,13 +79,13 @@ jobs:
       - name: Deploy to Elastic Beanstalk
         uses: einaregilsson/beanstalk-deploy@v22
         with:
-          aws_access_key: ${{ env.AWS_ACCESS_KEY_ID }}
-          aws_secret_key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-          aws_session_token: ${{ env.AWS_SESSION_TOKEN }}
-          region: ${{ env.AWS_REGION }}
-          application_name: ${{ env.EB_APP_NAME }}
-          environment_name: ${{ env.EB_ENV_NAME }}
-          version_label: ${{ env.VERSION_LABEL }}
+          aws_access_key:     ${{ env.AWS_ACCESS_KEY_ID }}
+          aws_secret_key:     ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws_session_token:  ${{ env.AWS_SESSION_TOKEN }}
+          region:             ${{ env.AWS_REGION }}
+          application_name:   ${{ env.EB_APP_NAME }}
+          environment_name:   ${{ env.EB_ENV_NAME }}
+          version_label:      ${{ env.VERSION_LABEL }}
           deployment_package: SourceBundle.zip
           existing_bucket_name: elasticbeanstalk-ap-southeast-1-140023375941
           wait_for_deployment: true
