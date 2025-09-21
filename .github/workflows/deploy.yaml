@@ -28,7 +28,7 @@ jobs:
       ECR_REPO: refconstructionopc
       EB_APP_NAME: refconstructionopc
       EB_ENV_NAME: Refconstructionopc-env
-      CONTAINER_PORT: "8080"
+      CONTAINER_PORT: "8080"   # not used anymore, safe to keep
       VERSION_LABEL: v-${{ github.run_number }}-${{ github.run_attempt }}-${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
@@ -41,6 +41,8 @@ jobs:
       - name: Who am I
         run: aws sts get-caller-identity
 
+      # These ECR steps are now optional (EB will build from Dockerfile),
+      # but left intact to keep your flow unchanged.
       - name: Login to Amazon ECR
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
@@ -59,23 +61,17 @@ jobs:
           docker push $IMAGE:${{ github.sha }}
           docker push $IMAGE:latest
 
-      - name: Generate Dockerrun.aws.json (v1) with :latest
+     # New: bundle the whole repo for EB (Dockerfile-based deploy)
+      - name: Create EB bundle from repository (Dockerfile mode)
         run: |
-          IMAGE_URI="${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:latest"
-          cat > Dockerrun.aws.json <<JSON
-          {
-            "AWSEBDockerrunVersion": 1,
-            "Image": { "Name": "$IMAGE_URI", "Update": "true" },
-            "Ports": [ { "ContainerPort": "${{ env.CONTAINER_PORT }}" } ]
-          }
-          JSON
-          cat Dockerrun.aws.json
-      
-
-      - name: Create EB bundle
-        run: |
+          # Ensure we don't accidentally include Dockerrun and confuse EB
+          rm -f Dockerrun.aws.json
           rm -f SourceBundle.zip
-          zip -q SourceBundle.zip Dockerrun.aws.json
+
+          # Zip the repo (exclude git metadata and GH workflows to keep it lean)
+          zip -qr SourceBundle.zip . \
+            -x ".git/*" ".github/*" "SourceBundle.zip"
+
           ls -lah
 
       - name: Deploy to Elastic Beanstalk
