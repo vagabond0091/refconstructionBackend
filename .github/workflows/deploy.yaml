@@ -62,15 +62,15 @@ jobs:
       - name: Generate Dockerrun.aws.json (v1) with :latest
         run: |
           IMAGE_URI="${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:latest"
-          PORT=${{ env.CONTAINER_PORT }}   # <- becomes plain number (e.g., 8080)
-          cat > Dockerrun.aws.json <<EOF
+          cat > Dockerrun.aws.json <<JSON
           {
             "AWSEBDockerrunVersion": 1,
             "Image": { "Name": "$IMAGE_URI", "Update": "true" },
-            "Ports": [ { "ContainerPort": ${PORT} } ]
+            "Ports": [ { "ContainerPort": "${{ env.CONTAINER_PORT }}" } ]
           }
-          EOF
+          JSON
           cat Dockerrun.aws.json
+      
 
       - name: Create EB bundle
         run: |
