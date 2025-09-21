@@ -48,43 +48,43 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 🔹 1. Configure AWS using OIDC role
+      # 1) Assume your OIDC deploy role
       - name: Configure AWS credentials from OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: arn:aws:iam::140023375941:role/github-oidc-eb-deploy
+          role-session-name: GitHubActions
 
-      # Debug
       - name: Debug AWS Identity
         run: aws sts get-caller-identity
 
-      #  2. Login to ECR
+      # 2) Login to ECR
       - name: Login to Amazon ECR
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      #  3. Build Docker image (tagged with commit SHA)
+      # 3) Build Docker image
       - name: Build Docker image
         run: |
           IMAGE="${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}"
           GIT_SHA="${{ github.sha }}"
           docker build -t ${IMAGE}:${GIT_SHA} .
 
-      #  4. Push Docker image
+      # 4) Push Docker image
       - name: Push Docker image
         run: |
           IMAGE="${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}"
           docker push ${IMAGE}:${{ github.sha }}
 
-      #  5. Verify image if it was pushed
+      # 5) (Optional) Verify the image exists
       - name: Verify image pushed
         run: |
           aws ecr describe-images \
             --repository-name "${{ env.ECR_REPO }}" \
             --image-ids imageTag="${{ github.sha }}"
 
-      # >>> ADDED: Generate Dockerrun.aws.json (single-container v1) <<<
+      # 6) Generate Dockerrun.aws.json (v1) — NOTE: ContainerPort is a STRING
       - name: Generate Dockerrun.aws.json (v1)
         run: |
           IMAGE_URI="${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ github.sha }}"
@@ -96,30 +96,29 @@ jobs:
               "Update": "true"
             },
             "Ports": [
-              { "ContainerPort": "__PORT__" }
+              { "ContainerPort": "__PORT_STRING__" }
             ]
           }
           JSON
+          # Replace tokens. EB v1 expects the port as a *string*.
           sed -i "s|__IMAGE_URI__|${IMAGE_URI}|g" Dockerrun.aws.json
-          sed -i "s|__PORT__|${{ env.CONTAINER_PORT }}|g" Dockerrun.aws.json
+          sed -i "s|__PORT_STRING__|${{ env.CONTAINER_PORT }}|g" Dockerrun.aws.json
           echo "Generated Dockerrun.aws.json:"
           cat Dockerrun.aws.json
 
-      # >>> ADDED: Create the EB source bundle used by the deploy step <<<
+      # 7) Create the EB bundle
       - name: Create EB bundle (SourceBundle.zip)
         run: |
           zip -q SourceBundle.zip Dockerrun.aws.json
           ls -lah
           test -f SourceBundle.zip || { echo "SourceBundle.zip not found"; exit 1; }
-          
-      - name: Sanity check S3 access (bucket & object)
+
+      # 8) Quick S3 sanity (bucket exists & is in-region)
+      - name: Sanity check S3 bucket
         run: |
           aws s3api get-bucket-location --bucket elasticbeanstalk-ap-southeast-1-140023375941
-          aws s3api head-object \
-            --bucket elasticbeanstalk-ap-southeast-1-140023375941 \
-            --key refconstructionopc/v-13-9-21b2f3b4134347c43c0f0a7be6698f9f888abcac.zip
 
-      # 6. Deploy to EB (explicitly passing AWS creds)
+      # 9) Deploy to Elastic Beanstalk
       - name: Deploy to Elastic Beanstalk
         uses: einaregilsson/beanstalk-deploy@v22
         with:
