@@ -27,8 +27,8 @@ jobs:
     permissions: { id-token: write, contents: read }
     env:
       AWS_REGION: ap-southeast-1
-      EB_APP_NAME: refconstructionopc
-      EB_ENV_NAME: Refconstructionopc-env
+      EB_APP_NAME: refconstructionopc            # ⚠️ must match EB Application name EXACTLY (case-sensitive)
+      EB_ENV_NAME: Refconstructionopc-env       # your EB Environment name
       EB_BUCKET: elasticbeanstalk-ap-southeast-1-140023375941
       VERSION_LABEL: v-${{ github.run_number }}-${{ github.run_attempt }}-${{ github.sha }}
       S3_KEY: refconstructionopc/${{ github.sha }}.zip
@@ -43,43 +43,26 @@ jobs:
       - name: Who am I
         run: aws sts get-caller-identity
 
-      - name: Validate Dockerfile and .dockerignore
+      - name: Validate Dockerfile
         run: |
-          test -f Dockerfile || { echo "Dockerfile missing at repo root. EB Dockerfile mode requires it."; exit 1; }
-          echo "Top of Dockerfile:"
+          test -f Dockerfile || { echo "Dockerfile missing at repo root"; exit 1; }
           head -n 30 Dockerfile || true
-          echo
-          echo ".dockerignore (if present):"
-          [ -f .dockerignore ] && sed -n '1,200p' .dockerignore || echo "(none)"
 
       - name: Create EB SourceBundle (Dockerfile mode, NO Dockerrun)
         run: |
           set -e
-          # Hard fail if any Dockerrun exists
-          FOUND=$(find . -type f -iname 'dockerrun*.json' -print || true)
-          if [ -n "$FOUND" ]; then
-            echo "❌ Found Dockerrun files in repo (Dockerfile mode must not include these):"
-            echo "$FOUND"
+          # Fail if any Dockerrun is present anywhere
+          if find . -type f -iname 'dockerrun*.json' | grep -qi .; then
+            echo "❌ Dockerrun found in repo. Delete it for Dockerfile mode."
+            find . -type f -iname 'dockerrun*.json' -print
             exit 1
           fi
-
           rm -f SourceBundle*.zip
-          # Zip the repo (exclude git metadata & the bundle itself)
-          zip -qr SourceBundle.zip . \
-            -x ".git/*" ".github/*" "SourceBundle*.zip"
-
+          zip -qr SourceBundle.zip . -x ".git/*" ".github/*" "SourceBundle*.zip"
           echo "Bundle listing (first 200 lines):"
           unzip -l SourceBundle.zip | head -n 200 || true
-
-          # Double-check the bundle contains Dockerfile and does NOT contain Dockerrun
-          if ! unzip -l SourceBundle.zip | awk '{print $4}' | grep -qi '^Dockerfile$'; then
-            echo "❌ Dockerfile not found in SourceBundle.zip root."
-            exit 1
-          fi
-          if unzip -l SourceBundle.zip | awk '{print $4}' | grep -qi 'dockerrun'; then
-            echo "❌ Dockerrun found in SourceBundle.zip. Aborting."
-            exit 1
-          fi
+          # Ensure Dockerfile is at the root of the zip
+          unzip -l SourceBundle.zip | awk '{print $4}' | grep -qi '^Dockerfile$' || { echo "❌ Dockerfile not in bundle root"; exit 1; }
           echo "✅ Bundle looks good (Dockerfile present, no Dockerrun)."
 
       - name: Upload bundle to EB S3
@@ -103,38 +86,75 @@ jobs:
             --environment-name "${EB_ENV_NAME}" \
             --version-label "${VERSION_LABEL}"
 
-      - name: Wait for environment to finish updating
+      - name: Wait and verify environment version (robust)
         run: |
           set -e
+          echo "Waiting for environment to be 'Ready'..."
           aws elasticbeanstalk wait environment-updated --environment-names "${EB_ENV_NAME}"
-          echo "Environment reports 'updated'. Verifying version..."
-          CURR=$(aws elasticbeanstalk describe-environments --environment-names "${EB_ENV_NAME}" --query "Environments[0].VersionLabel" --output text)
-          echo "Current VersionLabel: ${CURR}"
-          test "${CURR}" = "${VERSION_LABEL}" || { echo "❌ VersionLabel mismatch"; exit 1; }
+
+          echo "Describe env (with application name for exact match):"
+          DESCRIBE=$(aws elasticbeanstalk describe-environments \
+            --application-name "${EB_APP_NAME}" \
+            --environment-names "${EB_ENV_NAME}")
+          echo "$DESCRIBE" | jq .
+
+          # Poll for VersionLabel to show up (sometimes lags)
+          FOUND="no"
+          for i in {1..18}; do  # ~3 minutes max
+            CURR=$(aws elasticbeanstalk describe-environments \
+              --application-name "${EB_APP_NAME}" \
+              --environment-names "${EB_ENV_NAME}" \
+              --query "Environments[0].VersionLabel" --output text)
+            echo "Attempt $i: VersionLabel = ${CURR}"
+            if [ "$CURR" = "${VERSION_LABEL}" ]; then
+              FOUND="yes"
+              break
+            fi
+            sleep 10
+          done
+
+          if [ "$FOUND" != "yes" ]; then
+            echo "WARN: VersionLabel not reflected yet (got: ${CURR}). Checking events for proof of deploy..."
+            CNT=$(aws elasticbeanstalk describe-events \
+              --application-name "${EB_APP_NAME}" \
+              --environment-name "${EB_ENV_NAME}" \
+              --max-records 100 \
+              --query "length(Events[?contains(Message, '${VERSION_LABEL}')])" \
+              --output text)
+            echo "Events mentioning ${VERSION_LABEL}: $CNT"
+            if [ "$CNT" -lt 1 ]; then
+              echo "❌ Did not find an event confirming deployment of ${VERSION_LABEL}"
+              exit 1
+            fi
+          fi
 
       - name: Show recent EB environment events
         run: |
           aws elasticbeanstalk describe-events \
             --application-name "${EB_APP_NAME}" \
             --environment-name "${EB_ENV_NAME}" \
-            --max-records 100 \
+            --max-records 50 \
             --query 'Events[].{When:EventDate,S:Severity,Msg:Message}' \
             --output table
 
-      # If things still look weird, grab instance logs bundle URLs
       - name: (Optional) Request and fetch EB logs
         if: always()
         run: |
           set -e
-          echo "Requesting log bundle..."
           aws elasticbeanstalk request-environment-info \
             --environment-name "${EB_ENV_NAME}" \
             --info-type bundle >/dev/null
-          # Give EB a moment to prepare logs
           sleep 20
-          echo "Retrieving log bundle URLs:"
           aws elasticbeanstalk retrieve-environment-info \
             --environment-name "${EB_ENV_NAME}" \
             --info-type bundle \
             --query 'EnvironmentInfo[].{Time:SampleTimestamp,URL:Message}' \
+            --output table
+
+      - name: Show platform & env summary (sanity)
+        run: |
+          aws elasticbeanstalk describe-environments \
+            --application-name "${EB_APP_NAME}" \
+            --environment-names "${EB_ENV_NAME}" \
+            --query 'Environments[0].{App:ApplicationName,Env:EnvironmentName,Tier:Tier.Name,Platform:PlatformArn,Status:Status,Health:Health,Version:VersionLabel}' \
             --output table
