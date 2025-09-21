@@ -28,7 +28,7 @@ jobs:
       ECR_REPO: refconstructionopc
       EB_APP_NAME: refconstructionopc
       EB_ENV_NAME: Refconstructionopc-env
-      CONTAINER_PORT: "8080"   # not used anymore, safe to keep
+      CONTAINER_PORT: "8080"   # not used by this flow; safe to keep
       VERSION_LABEL: v-${{ github.run_number }}-${{ github.run_attempt }}-${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
@@ -41,8 +41,7 @@ jobs:
       - name: Who am I
         run: aws sts get-caller-identity
 
-      # These ECR steps are now optional (EB will build from Dockerfile),
-      # but left intact to keep your flow unchanged.
+      # ECR steps are optional for Dockerfile-on-EB, but left as-is per your request
       - name: Login to Amazon ECR
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
@@ -61,22 +60,34 @@ jobs:
           docker push $IMAGE:${{ github.sha }}
           docker push $IMAGE:latest
 
-      - name: Sanity check bundle
+      # ---- Dockerfile-based EB bundle ----
+      - name: Verify Dockerfile exists (fail early)
         run: |
-          unzip -l SourceBundle.zip | grep -i -E 'dockerrun|dockerfile' || true
+          if [ ! -f Dockerfile ]; then
+            echo "Dockerfile missing at repo root. EB Dockerfile mode requires it."
+            exit 1
+          fi
 
-      # New: bundle the whole repo for EB (Dockerfile-based deploy)
       - name: Create EB bundle from repository (Dockerfile mode)
         run: |
-          # Ensure we don't accidentally include Dockerrun and confuse EB
+          # Make 100% sure Dockerrun is not included so EB doesn't switch modes
           rm -f Dockerrun.aws.json
           rm -f SourceBundle.zip
 
-          # Zip the repo (exclude git metadata and GH workflows to keep it lean)
+          # Zip the repo (exclude Git metadata, workflows, and any Dockerrun anywhere)
           zip -qr SourceBundle.zip . \
-            -x ".git/*" ".github/*" "SourceBundle.zip"
+            -x ".git/*" ".github/*" "SourceBundle.zip" "*Dockerrun.aws.json"
 
           ls -lah
+
+      - name: Sanity-check bundle contents (must have Dockerfile; must not have Dockerrun)
+        run: |
+          echo "Bundle listing (first 200 lines):"
+          unzip -l SourceBundle.zip | sed -n '1,200p'
+          # require at least one Dockerfile at repo root
+          test $(unzip -l SourceBundle.zip | awk '{print $4}' | grep -cE '^Dockerfile$|^.*/Dockerfile$') -ge 1
+          # ensure Dockerrun is NOT present
+          test $(unzip -l SourceBundle.zip | awk '{print $4}' | grep -ci 'Dockerrun\.aws\.json' || true) -eq 0
 
       - name: Deploy to Elastic Beanstalk
         uses: einaregilsson/beanstalk-deploy@v22
