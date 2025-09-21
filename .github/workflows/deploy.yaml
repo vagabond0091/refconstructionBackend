@@ -61,7 +61,11 @@ jobs:
           docker push $IMAGE:${{ github.sha }}
           docker push $IMAGE:latest
 
-     # New: bundle the whole repo for EB (Dockerfile-based deploy)
+      - name: Sanity check bundle
+        run: |
+          unzip -l SourceBundle.zip | grep -i -E 'dockerrun|dockerfile' || true
+
+      # New: bundle the whole repo for EB (Dockerfile-based deploy)
       - name: Create EB bundle from repository (Dockerfile mode)
         run: |
           # Ensure we don't accidentally include Dockerrun and confuse EB
